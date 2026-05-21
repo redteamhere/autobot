@@ -1,0 +1,28 @@
+{
+  "users": {
+    "8380598815": {
+      "user_id": 242558,
+      "username": "Lucasgirls",
+      "first_name": "lucas",
+      "paid": true,
+      "expiry_date": "2026-05-28",
+      "daily_token_limit": 25,
+      "tokens_used_today": 1,
+      "last_token_reset": "2026-05-21",
+      "monthly_tokens_used": 12,
+      "last_month_reset": "2026-05"
+    },
+    "8433228223": {
+      "user_id": 14727,
+      "username": "lazarusC2",
+      "first_name": "LAZARUS",
+      "paid": true,
+      "expiry_date": "2026-05-28",
+      "daily_token_limit": 25,
+      "tokens_used_today": 1,
+      "last_token_reset": "2026-05-08",
+      "monthly_tokens_used": 1,
+      "last_month_reset": "2026-05"
+    }
+  }
+}

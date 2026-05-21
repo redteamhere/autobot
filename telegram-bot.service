@@ -1,0 +1,16 @@
+[Unit]
+Description=Telegram APK Protection Bot
+After=network.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__HOME__/telegram_bot
+ExecStart=__HOME__/telegram_bot/venv/bin/python bot.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
