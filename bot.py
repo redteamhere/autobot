@@ -1140,6 +1140,94 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Admin broadcast command
+# ──────────────────────────────────────────────────────────────────────────────
+
+async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin-only: broadcast a message to every registered user (paid + unpaid).
+
+    Two modes:
+      /broadcast <text>   — sends the typed text to all users
+      Reply to any msg with /broadcast — forwards that message to all users
+    """
+    if not await admin_only(update):
+        return
+
+    message = update.effective_message
+    chat    = update.effective_chat
+    if message is None or chat is None:
+        return
+
+    # ── Determine what to broadcast ──────────────────────────────────────────
+    reply_msg   = message.reply_to_message
+    inline_text = " ".join(context.args).strip() if context.args else ""
+
+    if not reply_msg and not inline_text:
+        await safe_send_message(
+            context.bot, chat.id,
+            "Usage:\n"
+            "• /broadcast <your message>  — broadcast text\n"
+            "• Reply to any message with /broadcast — forward that message",
+        )
+        return
+
+    # Collect all registered user Telegram IDs
+    async with users_lock:
+        data = load_users()
+        user_ids = [int(tid) for tid in data["users"].keys()]
+
+    if not user_ids:
+        await safe_send_message(context.bot, chat.id, "No registered users to broadcast to.")
+        return
+
+    # Notify admin that broadcast started
+    status_msg = await safe_send_message(
+        context.bot, chat.id,
+        f"📢 Broadcasting to {len(user_ids)} users...",
+    )
+
+    sent = failed = blocked = 0
+
+    for tid in user_ids:
+        try:
+            if reply_msg:
+                await reply_msg.forward(chat_id=tid)
+            else:
+                await context.bot.send_message(chat_id=tid, text=inline_text)
+            sent += 1
+        except Forbidden:
+            blocked += 1
+        except RetryAfter as exc:
+            await asyncio.sleep(float(exc.retry_after) + 0.5)
+            try:
+                if reply_msg:
+                    await reply_msg.forward(chat_id=tid)
+                else:
+                    await context.bot.send_message(chat_id=tid, text=inline_text)
+                sent += 1
+            except Exception:
+                failed += 1
+        except Exception as exc:
+            logger.warning("Broadcast cmd: failed to send to %s: %s", tid, exc)
+            failed += 1
+        await asyncio.sleep(0.05)   # ~20 msgs/sec
+
+    logger.info("Admin broadcast — sent: %d | blocked: %d | failed: %d", sent, blocked, failed)
+
+    result = (
+        f"✅ Broadcast complete!\n"
+        f"• Sent:    {sent}\n"
+        f"• Blocked: {blocked}  (users who blocked the bot)\n"
+        f"• Failed:  {failed}"
+    )
+    if status_msg:
+        await safe_edit_message(status_msg, result)
+    else:
+        await safe_send_message(context.bot, chat.id, result)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Channel broadcast handler
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -1239,6 +1327,7 @@ def main() -> None:
     application.add_handler(CommandHandler("settokens", cmd_settokens))
     application.add_handler(CommandHandler("userinfo", cmd_userinfo))
     application.add_handler(CommandHandler("listusers", cmd_listusers))
+    application.add_handler(CommandHandler("broadcast", cmd_broadcast))
     # Admin text reply → forwards message to the corresponding user
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_text))
     # Single document handler — routes internally to delivery or APK submission
@@ -1283,6 +1372,7 @@ def main() -> None:
             BotCommand("setpaid",   "Set paid status — /setpaid <id> yes|no"),
             BotCommand("settokens", "Set daily token limit — /settokens <id> <limit>"),
             BotCommand("setexpiry", "Set subscription expiry — /setexpiry <id> YYYY-MM-DD"),
+            BotCommand("broadcast", "Broadcast a message to all users — /broadcast <text>"),
         ]
         admin_ids_raw = os.getenv("ADMIN_TELEGRAM_ID", "")
         for admin_id_str in admin_ids_raw.split(","):
