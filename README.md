@@ -1,39 +1,141 @@
 # Telegram APK Protection Bot
 
-A Telegram bot that lets users submit APK files for protection. Files are forwarded to the admin, and the admin manually replies with the processed APK which is then delivered back to the user with a live waiting timer.
+A Telegram bot that lets users submit APK files for protection. The bot automatically relays APKs to a secondary processing bot, receives the result, and delivers it back to the user — with a live waiting timer throughout.
 
 ---
 
 ## Features
 
-- Users send an APK → bot forwards it to admin immediately
+### Core
+- Users send an APK → bot processes it automatically via Bot2 relay
 - Live timer message updates every 30 seconds while the user waits
-- Admin replies to the forwarded message with the processed APK → bot delivers it to the user automatically and deletes the waiting message
-- Delivered APK sent as a reply to the user's original message (clear context)
+- Processed APK delivered back to the user as a reply to their original message
 - Paid / trial user system with daily and monthly token limits
 - Max APK size: **20 MB**
 - Max subscription: **30 days**
 - Monthly cap: **500 APKs per user**
 - Unique random submission IDs (always increasing, starting from 1000)
-- Admin-only backend commands (invisible to regular users)
+- Rate limit: **10-second cooldown** between submissions per user
 - Multiple concurrent users supported
+
+### Bot2 Automated Relay (NEW)
+- User sends APK → bot automatically forwards it to a secondary bot (`@android_protect_bot`) using a Telethon user-account session
+- Bot waits for the processed APK response from Bot2
+- Processed APK is downloaded and delivered directly to the user — no manual admin action needed
+- Telethon session is auto-saved to `.env` after first login — no OTP required on subsequent restarts
+
+### Channel Broadcast (NEW)
+- Admin posts anything in a configured Telegram channel
+- Bot automatically forwards that post to **all registered users** (paid + unpaid)
+- Supports any content type: text, photo, video, file, etc.
+- Set `CHANNEL_ID` in `.env` to enable (leave blank to disable)
+
+### Admin Broadcast Command (NEW)
+- `/broadcast <text>` — admin sends a text message to all registered users
+- Reply to any message + `/broadcast` — forwards that message to all users
+- Shows live progress and a final sent/blocked/failed summary
+
+### Admin Dashboard
+- Full user management via admin-only commands
+- Forward APK to admin as fallback if Bot2 is unavailable
+- Admin can reply to a forwarded APK with the processed file to deliver manually
+- Admin can send text replies to users via the bot
 
 ---
 
-## Requirements
+## How It Works
 
-- Python **3.12** (recommended — do not use 3.13, 3.14, or 3.15)
-- A Telegram Bot Token (from [@BotFather](https://t.me/BotFather))
-- Your personal Telegram user ID (from [@userinfobot](https://t.me/userinfobot))
+### Automated flow (Bot2 relay)
+
+1. User sends an APK file (max 20 MB)
+2. Bot checks: size → rate limit → token balance → subscription
+3. APK is forwarded to admin (for records) and simultaneously sent to Bot2 via Telethon
+4. User sees a live timer updating every 30 seconds
+5. Bot2 processes the APK and returns the result
+6. Bot downloads the processed APK and delivers it to the user automatically
+7. Timer message is deleted, processed APK sent as reply to original message
+
+### Manual admin flow (fallback)
+
+1. Admin receives the forwarded APK in their chat
+2. Admin processes it externally and **replies** to the forwarded message with the result
+3. Bot delivers it to the user and confirms in the admin chat
+
+### Channel broadcast flow
+
+1. Admin posts anything in the configured channel
+2. Bot detects the post and forwards it to every registered user
+3. Users who blocked the bot are skipped silently
+
+---
+
+## Admin Commands
+
+| Command | Description | Example |
+|---|---|---|
+| `/listusers` | List all registered users | `/listusers` |
+| `/userinfo <id>` | View full details of a user | `/userinfo 45231` |
+| `/setpaid <id> yes\|no` | Mark user as paid or unpaid | `/setpaid 45231 yes` |
+| `/settokens <id> <limit>` | Set daily APK token limit | `/settokens 45231 5` |
+| `/setexpiry <id> YYYY-MM-DD` | Set subscription expiry (max 30 days) | `/setexpiry 45231 2025-05-28` |
+| `/broadcast <text>` | Broadcast text to all users | `/broadcast Update is live!` |
+| `/broadcast` (reply) | Forward any message to all users | *(reply to a message with /broadcast)* |
+
+> `/broadcast` also works by replying to any existing message — that message gets forwarded to all users.
+
+## User Commands
+
+| Command | Description |
+|---|---|
+| `/start` | Show welcome message with account info |
+| `/info` | Check your User ID, tokens, and subscription status |
+
+---
+
+## Configuration — `.env`
+
+```env
+# ── Required ──────────────────────────────────────────────
+TELEGRAM_BOT_TOKEN=your_bot_token_here
+ADMIN_TELEGRAM_ID=your_telegram_id_here
+
+# ── Bot2 automated relay (leave blank to disable) ─────────
+API_ID=your_telegram_api_id
+API_HASH=your_telegram_api_hash
+PHONE_NUMBER=+1234567890
+BOT2_USERNAME=@the_processing_bot
+# Auto-saved after first login — skip OTP on restart
+TELETHON_SESSION=
+
+# ── Channel broadcast (leave blank to disable) ────────────
+# Use @username or numeric ID (e.g. -1001234567890)
+CHANNEL_ID=@yourchannel
+```
+
+### Where to get each value
+
+| Variable | Where to get it |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` | [@BotFather](https://t.me/BotFather) → create bot |
+| `ADMIN_TELEGRAM_ID` | [@userinfobot](https://t.me/userinfobot) |
+| `API_ID` / `API_HASH` | [my.telegram.org](https://my.telegram.org) → API development tools |
+| `PHONE_NUMBER` | Your personal Telegram account number |
+| `BOT2_USERNAME` | Username of the secondary processing bot |
+| `CHANNEL_ID` | Your channel's `@username` or numeric ID |
+
+> To add **multiple admins** separate IDs with a comma:
+> ```
+> ADMIN_TELEGRAM_ID=111111111,222222222
+> ```
 
 ---
 
 ## Project Structure
 
 ```
-telegram_bot/
-├── bot.py                   # Main bot code
-├── .env                     # Your secret tokens (never commit this)
+eve-main/
+├── bot.py                   # Main bot code (all logic)
+├── .env                     # Your credentials (never commit this)
 ├── .env.example             # Template for .env
 ├── requirements.txt         # Python dependencies
 ├── render.yaml              # Render.com deployment config
@@ -43,65 +145,24 @@ telegram_bot/
 └── submission_counter.json  # Auto-created: submission ID counter
 ```
 
----
-
-## Data Files
-
-These files are created automatically on first run:
+### Data files (auto-created on first run)
 
 | File | Purpose |
 |---|---|
-| `users.json` | Stores all user records (paid status, tokens, expiry) |
+| `users.json` | All user records: paid status, tokens, expiry |
 | `deliveries.json` | Tracks pending APK deliveries from admin to user |
-| `submission_counter.json` | Tracks the submission ID counter |
+| `submission_counter.json` | Sequential submission ID counter |
 
 > **Do not delete these files** while the bot is running. Back them up regularly.
 
 ---
 
-## How It Works
+## Requirements
 
-### User flow
-
-1. User sends `/start` → sees their User ID, paid status, and token balance
-2. User sends an APK file (max 20 MB)
-3. Bot checks: size limit → rate limit (10 s cooldown) → token balance
-4. If allowed: APK is forwarded to admin, user sees a live timer message
-5. Timer updates every 30 seconds showing elapsed time
-6. When admin delivers the processed APK, the timer message is deleted and the user receives the protected APK as a reply to their original file
-
-### Admin flow
-
-1. Admin receives the forwarded APK in their Telegram chat
-2. Admin processes the APK externally
-3. Admin **replies** to the forwarded message with the processed APK file
-4. Bot automatically:
-   - Deletes the user's waiting/timer message
-   - Sends the processed APK to the user as a reply to their original message
-   - Confirms delivery in the admin chat
-
----
-
-## Admin Commands
-
-These commands are only visible and accessible to admins:
-
-| Command | Description | Example |
-|---|---|---|
-| `/listusers` | List all users with status | `/listusers` |
-| `/userinfo <id>` | View full details of a user | `/userinfo 45231` |
-| `/setpaid <id> yes\|no` | Mark user as paid or unpaid | `/setpaid 45231 yes` |
-| `/settokens <id> <limit>` | Set daily APK token limit | `/settokens 45231 5` |
-| `/setexpiry <id> YYYY-MM-DD` | Set subscription expiry date (max 30 days) | `/setexpiry 45231 2025-05-28` |
-
-> You must set a user as paid (`/setpaid`) before setting tokens or expiry.
-
-## User Commands
-
-| Command | Description |
-|---|---|
-| `/start` | Show welcome message with account info |
-| `/info` | Check your User ID, tokens, and subscription status |
+- Python **3.12** (recommended — do not use 3.13, 3.14, or 3.15)
+- A Telegram Bot Token (from [@BotFather](https://t.me/BotFather))
+- Your personal Telegram user ID (from [@userinfobot](https://t.me/userinfobot))
+- *(Optional)* Telegram API credentials for Bot2 relay ([my.telegram.org](https://my.telegram.org))
 
 ---
 
@@ -188,8 +249,8 @@ npm install -g pm2-windows-startup
 
 ```cmd
 cd C:\
-git clone https://github.com/redteamhere/eve.git telegram_bot
-cd C:\telegram_bot
+git clone https://github.com/redteamhere/autobot.git eve-main
+cd C:\eve-main
 ```
 
 ---
@@ -197,7 +258,7 @@ cd C:\telegram_bot
 ### Step 8 — Create Virtual Environment and Install Dependencies
 
 ```cmd
-cd C:\telegram_bot
+cd C:\eve-main
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
@@ -208,51 +269,70 @@ pip install -r requirements.txt
 ### Step 9 — Create the .env File
 
 ```cmd
-notepad C:\telegram_bot\.env
+notepad C:\eve-main\.env
 ```
 
-Paste this into Notepad:
+Paste and fill in your values:
 
-```
+```env
 TELEGRAM_BOT_TOKEN=your_bot_token_here
 ADMIN_TELEGRAM_ID=your_telegram_id_here
-```
 
-- Get `TELEGRAM_BOT_TOKEN` from [@BotFather](https://t.me/BotFather)
-- Get `ADMIN_TELEGRAM_ID` from [@userinfobot](https://t.me/userinfobot)
+# Bot2 relay (optional — leave blank to disable)
+API_ID=
+API_HASH=
+PHONE_NUMBER=
+BOT2_USERNAME=
+TELETHON_SESSION=
+
+# Channel broadcast (optional — leave blank to disable)
+CHANNEL_ID=
+```
 
 Press `Ctrl + S` → close Notepad.
 
-> To add multiple admins separate IDs with a comma:
-> ```
-> ADMIN_TELEGRAM_ID=111111111,222222222
-> ```
+> **First run with Bot2:** the bot will ask for an OTP on your phone number. Enter it once — the session is auto-saved to `.env` and never asked again.
 
 ---
 
-### Step 10 — Test Run (optional but recommended)
+### Step 10 — Channel Broadcast Setup (optional)
+
+1. Set `CHANNEL_ID=@yourchannel` in `.env`
+2. Open your channel in Telegram → **Edit → Administrators → Add Administrator**
+3. Search for your bot and add it — it only needs **"Post Messages"** permission
+4. Now any post you make in the channel will be forwarded to all registered users
+
+---
+
+### Step 11 — Test Run (optional but recommended)
 
 ```cmd
-cd C:\telegram_bot
+cd C:\eve-main
 venv\Scripts\activate
 python bot.py
 ```
 
-You should see `Application started`. Test in Telegram, then stop with `Ctrl + C`.
+You should see:
+```
+Telethon client started — bot2: @android_protect_bot
+Application started
+```
+
+Test in Telegram, then stop with `Ctrl + C`.
 
 ---
 
-### Step 11 — Start Bot with PM2 (24/7)
+### Step 12 — Start Bot with PM2 (24/7)
 
 > ⚠️ Always use the **full path** for the interpreter — relative paths will fail.
 
 ```cmd
-pm2 start C:\telegram_bot\bot.py --name "telegram-bot" --interpreter C:\telegram_bot\venv\Scripts\python.exe
+pm2 start C:\eve-main\bot.py --name "telegram-bot" --interpreter C:\eve-main\venv\Scripts\python.exe
 ```
 
 ---
 
-### Step 12 — Auto-start on Server Reboot
+### Step 13 — Auto-start on Server Reboot
 
 ```cmd
 pm2 save
@@ -261,7 +341,7 @@ pm2-startup install
 
 ---
 
-### Step 13 — Verify It Is Running
+### Step 14 — Verify It Is Running
 
 ```cmd
 pm2 status
@@ -304,10 +384,8 @@ pm2 delete telegram-bot
 
 ### Updating the Bot After Code Changes
 
-When you push new code to GitHub and want to update the server:
-
 ```cmd
-cd C:\telegram_bot
+cd C:\eve-main
 git pull origin main
 pm2 restart telegram-bot
 ```
@@ -320,13 +398,15 @@ pm2 restart telegram-bot
 2. Go to [render.com](https://render.com) → **New → Background Worker**
 3. Connect your GitHub repo
 4. Set environment variables in Render's dashboard:
-   - `TELEGRAM_BOT_TOKEN` = your bot token
-   - `ADMIN_TELEGRAM_ID` = your telegram ID
+   - `TELEGRAM_BOT_TOKEN`
+   - `ADMIN_TELEGRAM_ID`
+   - `API_ID`, `API_HASH`, `PHONE_NUMBER`, `BOT2_USERNAME` *(optional)*
+   - `CHANNEL_ID` *(optional)*
 5. Render will auto-deploy using `render.yaml`
 
 ---
 
-## Deployment — Linux Server (always on with systemd)
+## Deployment — Linux Server (systemd)
 
 Use the included `telegram-bot.service` file.
 
@@ -334,9 +414,9 @@ Use the included `telegram-bot.service` file.
 
 Replace the placeholders:
 ```
-User=__USER__        →  your Linux username  (e.g. ubuntu)
-WorkingDirectory=__HOME__/telegram_bot  →  e.g. /home/ubuntu/telegram_bot
-ExecStart=__HOME__/telegram_bot/venv/bin/python bot.py
+User=__USER__              →  your Linux username (e.g. ubuntu)
+WorkingDirectory=__HOME__/eve-main
+ExecStart=__HOME__/eve-main/venv/bin/python bot.py
 ```
 
 ### 2. Install and enable
@@ -363,8 +443,8 @@ sudo systemctl stop telegram-bot       # stop
 
 ```cmd
 # 1. Clone
-git clone https://github.com/redteamhere/eve.git telegram_bot
-cd telegram_bot
+git clone https://github.com/redteamhere/autobot.git eve-main
+cd C:\eve-main
 
 # 2. Setup
 python -m venv venv
@@ -375,7 +455,7 @@ pip install -r requirements.txt
 notepad .env
 
 # 4. Run with PM2
-pm2 start C:\telegram_bot\bot.py --name "telegram-bot" --interpreter C:\telegram_bot\venv\Scripts\python.exe
+pm2 start C:\eve-main\bot.py --name "telegram-bot" --interpreter C:\eve-main\venv\Scripts\python.exe
 pm2 save
 pm2-startup install
 ```
