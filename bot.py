@@ -1140,6 +1140,73 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Channel broadcast handler
+# ──────────────────────────────────────────────────────────────────────────────
+
+async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Forward any post from the configured channel to ALL registered users (paid + unpaid)."""
+    message = update.channel_post
+    if message is None:
+        return
+
+    channel_id_cfg = os.getenv("CHANNEL_ID", "").strip()
+    if not channel_id_cfg:
+        return  # feature disabled — CHANNEL_ID not set
+
+    # Match configured channel by @username or numeric ID
+    chat = message.chat
+    matched = False
+    if channel_id_cfg.startswith("@") and chat.username:
+        matched = chat.username.lower() == channel_id_cfg.lstrip("@").lower()
+    else:
+        try:
+            matched = int(channel_id_cfg) == chat.id
+        except ValueError:
+            pass
+
+    if not matched:
+        return
+
+    # Collect all registered telegram IDs (paid AND unpaid)
+    async with users_lock:
+        data = load_users()
+        user_ids = [int(tid) for tid in data["users"].keys()]
+
+    if not user_ids:
+        logger.info("Channel broadcast: no registered users.")
+        return
+
+    logger.info("Channel broadcast: forwarding post to %d users...", len(user_ids))
+    sent = failed = blocked = 0
+
+    for tid in user_ids:
+        try:
+            await message.forward(chat_id=tid)
+            sent += 1
+        except Forbidden:
+            # User has blocked the bot — skip silently
+            blocked += 1
+        except RetryAfter as exc:
+            # Telegram flood limit — wait and retry once
+            await asyncio.sleep(float(exc.retry_after) + 0.5)
+            try:
+                await message.forward(chat_id=tid)
+                sent += 1
+            except Exception:
+                failed += 1
+        except Exception as exc:
+            logger.warning("Channel broadcast: failed to send to %s: %s", tid, exc)
+            failed += 1
+        # ~20 msgs/sec — well within Telegram's flood limits
+        await asyncio.sleep(0.05)
+
+    logger.info(
+        "Channel broadcast complete — sent: %d | blocked: %d | failed: %d",
+        sent, blocked, failed,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Application setup
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -1176,6 +1243,8 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_text))
     # Single document handler — routes internally to delivery or APK submission
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    # Channel post → broadcast to all registered users (paid + unpaid)
+    application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, handle_channel_post))
 
     async def post_init(app) -> None:
         await app.bot.set_my_commands([
