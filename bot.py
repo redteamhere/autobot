@@ -34,7 +34,7 @@ DEFAULT_USER_ID_START = 10000
 MONTHLY_TOKEN_LIMIT = 500
 MAX_SUBSCRIPTION_DAYS = 30
 APK_MIME_TYPE = "application/vnd.android.package-archive"
-RATE_LIMIT_SECONDS = 10
+RATE_LIMIT_SECONDS = 3
 MAX_APK_SIZE_BYTES = 20 * 1024 * 1024   # 20 MB
 SUBMISSION_ID_STEP_MIN = 1               # random step range (keeps IDs always
 SUBMISSION_ID_STEP_MAX = 9               #   increasing but unpredictable)
@@ -53,6 +53,8 @@ active_submission_ids: set[int] = set()
 # ── Bot2 integration state ─────────────────────────────────────────────────
 telethon_client: Optional[TelegramClient] = None
 bot2_conv_lock = asyncio.Lock()   # only one conversation with bot2 at a time
+bot2_queue_lock = asyncio.Lock()  # guards bot2_queue_count
+bot2_queue_count = 0              # how many APKs are currently waiting or processing
 
 
 logging.basicConfig(
@@ -629,6 +631,8 @@ async def _process_via_bot2(
     submission_id: int,
 ) -> None:
     """Send APK to bot2 via Telethon conversation, wait for document reply, deliver to user."""
+    global bot2_queue_count
+
     try:
         tg_file = await bot.get_file(document.file_id)
         file_bytes = bytes(await tg_file.download_as_bytearray())
@@ -640,10 +644,51 @@ async def _process_via_bot2(
     send_buf = io.BytesIO(file_bytes)
     send_buf.name = filename
 
+    # ── Track queue position ──────────────────────────────────────────────────
+    async with bot2_queue_lock:
+        bot2_queue_count += 1
+        my_position = bot2_queue_count
+
+    try:
+        # If others are ahead in the queue, tell the user their APK is waiting
+        if my_position > 1 and timer_msg_id is not None:
+            try:
+                await bot.edit_message_text(
+                    chat_id=user_chat_id,
+                    message_id=timer_msg_id,
+                    text=(
+                        f"📂 {filename}\n\n"
+                        f"Submission ID: {submission_id}\n\n"
+                        f"⏳ Queued — position #{my_position - 1} in line.\n"
+                        "Your APK will be processed shortly. Please wait."
+                    ),
+                )
+            except Exception:
+                pass
+        logger.info("APK %s queued for bot2 (position %d)", filename, my_position)
+
+    except Exception:
+        pass
+
     try:
         tmp_path: Optional[str] = None
         try:
             async with bot2_conv_lock:
+                # Update message to show processing has started
+                if timer_msg_id is not None:
+                    try:
+                        await bot.edit_message_text(
+                            chat_id=user_chat_id,
+                            message_id=timer_msg_id,
+                            text=(
+                                f"📂 {filename}\n\n"
+                                f"Submission ID: {submission_id}\n\n"
+                                "🔄 Processing your APK now...\n"
+                                "Please wait, this usually takes a few minutes."
+                            ),
+                        )
+                    except Exception:
+                        pass
                 async with telethon_client.conversation(bot2_username, timeout=700) as conv:
                     await conv.send_file(
                         send_buf,
@@ -712,6 +757,9 @@ async def _process_via_bot2(
     except Exception:
         logger.exception("bot2 error for user %s", user_chat_id)
         await safe_send_message(bot, user_chat_id, "Failed to deliver processed file.")
+    finally:
+        async with bot2_queue_lock:
+            bot2_queue_count = max(0, bot2_queue_count - 1)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
