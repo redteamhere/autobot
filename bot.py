@@ -1041,6 +1041,65 @@ async def cmd_userinfo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await safe_send_message(context.bot, update.effective_chat.id, text)
 
 
+async def cmd_finduser(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin-only: find a user by username. Usage: /finduser @username or /finduser username"""
+    if not await admin_only(update):
+        return
+    args = context.args
+    if not args:
+        await safe_send_message(context.bot, update.effective_chat.id,
+                                "Usage: /finduser @username\nExample: /finduser @lucasgirls")
+        return
+
+    # Strip leading @ if provided
+    query = args[0].lstrip("@").lower()
+
+    async with users_lock:
+        data = load_users()
+
+    users = data.get("users", {})
+    matches = []
+    for tg_key, record in users.items():
+        if not isinstance(record, dict):
+            continue
+        uname = (record.get("username") or "").lower()
+        if uname == query:
+            matches.append((tg_key, record))
+
+    if not matches:
+        await safe_send_message(context.bot, update.effective_chat.id,
+                                f"No user found with username @{query}.")
+        return
+
+    for tg_key, record in matches:
+        reset_tokens_if_new_day(record)
+        paid = record.get("paid", False)
+        active = is_subscription_active(record) if paid else False
+        uname_display = f"@{record['username']}" if record.get("username") else "No username"
+        fname = record.get("first_name") or "N/A"
+        text = (
+            f"👤 User Found\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Name: {fname}\n"
+            f"Username: {uname_display}\n"
+            f"Telegram ID: {tg_key}\n"
+            f"User ID: {record.get('user_id', 'N/A')}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Paid: {'✅ Yes' if paid else '❌ No'}\n"
+            f"Subscription: {'✅ Active' if active else '❌ Expired/None'}\n"
+            f"Expiry Date: {record.get('expiry_date') or 'N/A'}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Daily Token Limit: {record.get('daily_token_limit', 0)}\n"
+            f"Daily Tokens Used: {record.get('tokens_used_today', 0)}\n"
+            f"Daily Tokens Left: {daily_tokens_remaining(record)}\n"
+            f"Monthly Tokens Used: {record.get('monthly_tokens_used', 0)} / {MONTHLY_TOKEN_LIMIT}\n"
+            f"Monthly Tokens Left: {monthly_tokens_remaining(record)}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Last Reset: {record.get('last_token_reset', 'N/A')}"
+        )
+        await safe_send_message(context.bot, update.effective_chat.id, text)
+
+
 async def cmd_listusers(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await admin_only(update):
         return
@@ -1449,6 +1508,7 @@ def main() -> None:
     application.add_handler(CommandHandler("userinfo", cmd_userinfo))
     application.add_handler(CommandHandler("listusers", cmd_listusers))
     application.add_handler(CommandHandler("broadcast", cmd_broadcast))
+    application.add_handler(CommandHandler("finduser", cmd_finduser))
     # Admin text reply → forwards message to the corresponding user
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_text))
     # Single document handler — routes internally to delivery or APK submission
@@ -1531,6 +1591,7 @@ def main() -> None:
             BotCommand("settokens", "Set daily token limit — /settokens <id> <limit>"),
             BotCommand("setexpiry", "Set subscription expiry — /setexpiry <id> YYYY-MM-DD"),
             BotCommand("broadcast", "Broadcast a message to all users — /broadcast <text>"),
+            BotCommand("finduser",  "Find user by username — /finduser @username"),
         ]
         admin_ids_raw = os.getenv("ADMIN_TELEGRAM_ID", "")
         for admin_id_str in admin_ids_raw.split(","):
