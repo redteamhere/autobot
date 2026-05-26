@@ -51,10 +51,15 @@ user_rate_limits: dict[int, float] = {}
 active_submission_ids: set[int] = set()
 
 # ── Bot2 integration state ─────────────────────────────────────────────────
-telethon_client: Optional[TelegramClient] = None
-bot2_conv_lock = asyncio.Lock()   # only one conversation with bot2 at a time
-bot2_queue_lock = asyncio.Lock()  # guards bot2_queue_count
-bot2_queue_count = 0              # how many APKs are currently waiting or processing
+telethon_client:   Optional[TelegramClient] = None   # account 1
+telethon_client_2: Optional[TelegramClient] = None   # account 2 (fallback)
+bot2_conv_lock   = asyncio.Lock()   # account 1 — one conversation at a time
+bot2_conv_lock_2 = asyncio.Lock()   # account 2 — one conversation at a time
+bot2_queue_lock  = asyncio.Lock()   # guards bot2_queue_count
+bot2_queue_count = 0                # how many APKs are currently waiting or processing
+
+# Keywords that signal bot2 has hit its daily limit
+BOT2_LIMIT_KEYWORDS = ("daily limit", "contact support", "limit reached")
 
 
 logging.basicConfig(
@@ -605,13 +610,14 @@ async def run_submission_flow(
 # Bot2 integration
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _save_session_to_env(session_str: str) -> None:
+def _save_session_to_env(session_str: str, key: str = "TELETHON_SESSION") -> None:
+    """Persist a Telethon session string back to .env under the given key."""
     env_file = BASE_DIR / ".env"
     try:
         lines = env_file.read_text(encoding="utf-8").splitlines(keepends=True) if env_file.exists() else []
-        new_line = f"TELETHON_SESSION={session_str}\n"
+        new_line = f"{key}={session_str}\n"
         for i, line in enumerate(lines):
-            if line.startswith("TELETHON_SESSION="):
+            if line.startswith(f"{key}="):
                 lines[i] = new_line
                 break
         else:
@@ -619,6 +625,52 @@ def _save_session_to_env(session_str: str) -> None:
         env_file.write_text("".join(lines), encoding="utf-8")
     except OSError as exc:
         logger.warning("Could not save session to .env: %s", exc)
+
+
+class Bot2LimitError(Exception):
+    """Raised when bot2 responds with a daily-limit / contact-support message."""
+
+
+async def _run_bot2_conversation(
+    client: TelegramClient,
+    conv_lock: asyncio.Lock,
+    bot2_username: str,
+    send_buf: io.BytesIO,
+    filename: str,
+) -> str:
+    """
+    Open one conversation with bot2, send the APK, wait for a document response.
+    Returns the local temp-file path of the downloaded result.
+    Raises Bot2LimitError  if bot2 replies with a daily-limit / contact-support message.
+    Raises asyncio.TimeoutError if bot2 doesn't respond within 700 s.
+    """
+    async with conv_lock:
+        async with client.conversation(bot2_username, timeout=700) as conv:
+            await conv.send_file(
+                send_buf,
+                force_document=True,
+                attributes=[DocumentAttributeFilename(file_name=filename)],
+                workers=4,
+            )
+            logger.info("APK sent to bot2 (%s), waiting for response...", filename)
+
+            while True:
+                response = await conv.get_response()
+                if response.document:
+                    break
+                # Detect daily-limit error messages from bot2
+                if response.text:
+                    t = response.text.lower()
+                    if any(k in t for k in BOT2_LIMIT_KEYWORDS):
+                        logger.warning("bot2 limit message on account: %s", response.text)
+                        raise Bot2LimitError(response.text)
+                logger.info("bot2 sent non-document message, waiting for APK...")
+
+            tmp_path = await client.download_media(
+                response, file=tempfile.gettempdir()
+            )
+            logger.info("bot2 file downloaded to temp: %s", tmp_path)
+            return tmp_path
 
 
 async def _process_via_bot2(
@@ -630,7 +682,10 @@ async def _process_via_bot2(
     timer_msg_id: Optional[int],
     submission_id: int,
 ) -> None:
-    """Send APK to bot2 via Telethon conversation, wait for document reply, deliver to user."""
+    """
+    Send APK to bot2 via Telethon, wait for document reply, deliver to user.
+    Automatically falls back to Account 2 if Account 1 hits bot2's daily limit.
+    """
     global bot2_queue_count
 
     try:
@@ -641,17 +696,32 @@ async def _process_via_bot2(
         return
 
     bot2_username = os.getenv("BOT2_USERNAME", "").lstrip("@")
-    send_buf = io.BytesIO(file_bytes)
-    send_buf.name = filename
 
     # ── Track queue position ──────────────────────────────────────────────────
     async with bot2_queue_lock:
         bot2_queue_count += 1
         my_position = bot2_queue_count
 
+    if my_position > 1 and timer_msg_id is not None:
+        try:
+            await bot.edit_message_text(
+                chat_id=user_chat_id,
+                message_id=timer_msg_id,
+                text=(
+                    f"📂 {filename}\n\n"
+                    f"Submission ID: {submission_id}\n\n"
+                    f"⏳ Queued — position #{my_position - 1} in line.\n"
+                    "Your APK will be processed shortly. Please wait."
+                ),
+            )
+        except Exception:
+            pass
+    logger.info("APK %s queued for bot2 (position %d)", filename, my_position)
+
+    tmp_path: Optional[str] = None
     try:
-        # If others are ahead in the queue, tell the user their APK is waiting
-        if my_position > 1 and timer_msg_id is not None:
+        # ── Update status: processing started ────────────────────────────────
+        if timer_msg_id is not None:
             try:
                 await bot.edit_message_text(
                     chat_id=user_chat_id,
@@ -659,97 +729,95 @@ async def _process_via_bot2(
                     text=(
                         f"📂 {filename}\n\n"
                         f"Submission ID: {submission_id}\n\n"
-                        f"⏳ Queued — position #{my_position - 1} in line.\n"
-                        "Your APK will be processed shortly. Please wait."
+                        "🔄 Processing your APK now...\n"
+                        "Please wait, this usually takes a few minutes."
                     ),
                 )
             except Exception:
                 pass
-        logger.info("APK %s queued for bot2 (position %d)", filename, my_position)
 
-    except Exception:
-        pass
-
-    try:
-        tmp_path: Optional[str] = None
+        # ── Account 1 attempt ─────────────────────────────────────────────────
+        send_buf = io.BytesIO(file_bytes)
+        send_buf.name = filename
         try:
-            async with bot2_conv_lock:
-                # Update message to show processing has started
-                if timer_msg_id is not None:
-                    try:
-                        await bot.edit_message_text(
-                            chat_id=user_chat_id,
-                            message_id=timer_msg_id,
-                            text=(
-                                f"📂 {filename}\n\n"
-                                f"Submission ID: {submission_id}\n\n"
-                                "🔄 Processing your APK now...\n"
-                                "Please wait, this usually takes a few minutes."
-                            ),
-                        )
-                    except Exception:
-                        pass
-                async with telethon_client.conversation(bot2_username, timeout=700) as conv:
-                    await conv.send_file(
-                        send_buf,
-                        force_document=True,
-                        attributes=[DocumentAttributeFilename(file_name=filename)],
-                        workers=4,
-                    )
-                    logger.info("APK sent to bot2 (%s), waiting for response...", filename)
+            tmp_path = await _run_bot2_conversation(
+                telethon_client, bot2_conv_lock, bot2_username, send_buf, filename
+            )
+            logger.info("Account 1 processed APK successfully.")
 
-                    # Skip any text/status messages — wait until we get a document
-                    while True:
-                        response = await conv.get_response()
-                        if response.document:
-                            break
-                        logger.info("bot2 sent non-document message, waiting for APK...")
+        except Bot2LimitError as exc:
+            logger.warning("Account 1 daily limit hit (%s) — switching to Account 2.", exc)
 
-                    # Download to a temp file — avoids LOCATION_NOT_AVAILABLE on large files
-                    tmp_path = await telethon_client.download_media(
-                        response, file=tempfile.gettempdir()
-                    )
-                    logger.info("bot2 file downloaded to temp: %s", tmp_path)
-
-            if not tmp_path:
-                await safe_send_message(bot, user_chat_id, "Bot2 returned an empty file.")
+            # ── Account 2 fallback ────────────────────────────────────────────
+            if telethon_client_2 is None:
+                await safe_send_message(
+                    bot, user_chat_id,
+                    "⚠️ Processing service is temporarily at capacity. Please try again later."
+                )
                 return
 
-            # Delete the waiting/timer message before delivering the result
-            active_submission_ids.discard(submission_id)
+            # Notify user (transparent — no mention of accounts)
             if timer_msg_id is not None:
-                await safe_delete_by_id(bot, user_chat_id, timer_msg_id)
-
-            delivered = False
-            for reply_id in ([user_msg_id, None] if user_msg_id else [None]):
                 try:
-                    with open(tmp_path, "rb") as f:
-                        await bot.send_document(
-                            chat_id=user_chat_id,
-                            document=InputFile(f, filename=filename),
-                            reply_to_message_id=reply_id,
-                            read_timeout=300,
-                            write_timeout=300,
-                            connect_timeout=60,
-                        )
-                    delivered = True
-                    break
-                except BadRequest as exc:
-                    err = str(exc).lower()
-                    if reply_id and ("reply" in err or "message" in err):
-                        logger.info("Reply msg gone for user %s, retrying without reply", user_chat_id)
-                        continue
-                    raise
-            if delivered:
-                logger.info("bot2 APK delivered to user %s", user_chat_id)
-
-        finally:
-            if tmp_path:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
+                    await bot.edit_message_text(
+                        chat_id=user_chat_id,
+                        message_id=timer_msg_id,
+                        text=(
+                            f"📂 {filename}\n\n"
+                            f"Submission ID: {submission_id}\n\n"
+                            "🔄 Processing your APK now...\n"
+                            "Please wait, this usually takes a few minutes."
+                        ),
+                    )
+                except Exception:
                     pass
 
+            send_buf2 = io.BytesIO(file_bytes)
+            send_buf2.name = filename
+            tmp_path = await _run_bot2_conversation(
+                telethon_client_2, bot2_conv_lock_2, bot2_username, send_buf2, filename
+            )
+            logger.info("Account 2 processed APK successfully.")
+
+        # ── Deliver result to user ────────────────────────────────────────────
+        if not tmp_path:
+            await safe_send_message(bot, user_chat_id, "Bot2 returned an empty file.")
+            return
+
+        active_submission_ids.discard(submission_id)
+        if timer_msg_id is not None:
+            await safe_delete_by_id(bot, user_chat_id, timer_msg_id)
+
+        delivered = False
+        for reply_id in ([user_msg_id, None] if user_msg_id else [None]):
+            try:
+                with open(tmp_path, "rb") as f:
+                    await bot.send_document(
+                        chat_id=user_chat_id,
+                        document=InputFile(f, filename=filename),
+                        reply_to_message_id=reply_id,
+                        read_timeout=300,
+                        write_timeout=300,
+                        connect_timeout=60,
+                    )
+                delivered = True
+                break
+            except BadRequest as exc:
+                err = str(exc).lower()
+                if reply_id and ("reply" in err or "message" in err):
+                    logger.info("Reply msg gone for user %s, retrying without reply", user_chat_id)
+                    continue
+                raise
+        if delivered:
+            logger.info("bot2 APK delivered to user %s", user_chat_id)
+
+    except Bot2LimitError:
+        # Both accounts hit the limit
+        logger.error("Both Account 1 and Account 2 have hit bot2 daily limit.")
+        await safe_send_message(
+            bot, user_chat_id,
+            "⚠️ Processing service is at capacity for today. Please try again tomorrow."
+        )
     except asyncio.TimeoutError:
         await safe_send_message(bot, user_chat_id, "Processing timed out (server took too long). Please try again.")
     except asyncio.CancelledError:
@@ -758,6 +826,11 @@ async def _process_via_bot2(
         logger.exception("bot2 error for user %s", user_chat_id)
         await safe_send_message(bot, user_chat_id, "Failed to deliver processed file.")
     finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
         async with bot2_queue_lock:
             bot2_queue_count = max(0, bot2_queue_count - 1)
 
@@ -1391,9 +1464,9 @@ def main() -> None:
         await app.bot.set_my_description("Testing files\n\n")
 
         # ── Start Telethon client for bot2 integration ─────────────────────
-        api_id  = os.getenv("API_ID", "")
-        api_hash = os.getenv("API_HASH", "")
-        phone    = os.getenv("PHONE_NUMBER", "")
+        api_id     = os.getenv("API_ID", "")
+        api_hash   = os.getenv("API_HASH", "")
+        phone      = os.getenv("PHONE_NUMBER", "")
         bot2_uname = os.getenv("BOT2_USERNAME", "")
         if api_id and api_hash and phone and bot2_uname:
             global telethon_client
@@ -1401,16 +1474,35 @@ def main() -> None:
             session = StringSession(session_str) if session_str else StringSession()
             client = TelegramClient(session, int(api_id), api_hash)
             await client.start(phone=phone)
-            # Auto-save session string to .env so next restart skips OTP
             new_session_str = client.session.save()
             if new_session_str != session_str:
-                _save_session_to_env(new_session_str)
+                _save_session_to_env(new_session_str, key="TELETHON_SESSION")
                 os.environ["TELETHON_SESSION"] = new_session_str
-                logger.info("Telethon session saved to .env")
+                logger.info("Telethon session (account 1) saved to .env")
             telethon_client = client
-            logger.info("Telethon client started — bot2: %s", bot2_uname)
+            logger.info("Telethon client started (account 1) — bot2: %s", bot2_uname)
         else:
             logger.info("Bot2 env vars not set — bot2 integration disabled")
+
+        # ── Start Telethon client 2 (fallback account) ─────────────────────
+        api_id_2   = os.getenv("API_ID_2", "")
+        api_hash_2 = os.getenv("API_HASH_2", "")
+        phone_2    = os.getenv("PHONE_NUMBER_2", "")
+        if api_id_2 and api_hash_2 and phone_2 and bot2_uname:
+            global telethon_client_2
+            session_str_2 = os.getenv("TELETHON_SESSION_2", "")
+            session_2 = StringSession(session_str_2) if session_str_2 else StringSession()
+            client_2 = TelegramClient(session_2, int(api_id_2), api_hash_2)
+            await client_2.start(phone=phone_2)
+            new_session_str_2 = client_2.session.save()
+            if new_session_str_2 != session_str_2:
+                _save_session_to_env(new_session_str_2, key="TELETHON_SESSION_2")
+                os.environ["TELETHON_SESSION_2"] = new_session_str_2
+                logger.info("Telethon session (account 2) saved to .env")
+            telethon_client_2 = client_2
+            logger.info("Telethon client started (account 2) — fallback ready")
+        else:
+            logger.info("Bot2 account 2 vars not set — fallback account disabled")
 
         admin_commands = [
             BotCommand("start",     "Start the bot"),
@@ -1438,7 +1530,10 @@ def main() -> None:
     async def post_shutdown(app) -> None:
         if telethon_client is not None:
             await telethon_client.disconnect()
-            logger.info("Telethon client disconnected")
+            logger.info("Telethon client (account 1) disconnected")
+        if telethon_client_2 is not None:
+            await telethon_client_2.disconnect()
+            logger.info("Telethon client (account 2) disconnected")
 
     application.post_init = post_init
     application.post_shutdown = post_shutdown
