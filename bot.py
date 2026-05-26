@@ -1042,34 +1042,76 @@ async def cmd_userinfo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def cmd_finduser(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Admin-only: find a user by username. Usage: /finduser @username or /finduser username"""
+    """Admin-only: find a user by username, name, Telegram ID, or User ID.
+    Usage:
+      /finduser @username      — search by username
+      /finduser John           — search by name (partial match)
+      /finduser 123456789      — search by Telegram ID or User ID
+    """
     if not await admin_only(update):
         return
     args = context.args
     if not args:
-        await safe_send_message(context.bot, update.effective_chat.id,
-                                "Usage: /finduser @username\nExample: /finduser @lucasgirls")
+        await safe_send_message(
+            context.bot, update.effective_chat.id,
+            "🔍 Find a user — usage:\n"
+            "  • By username  → /finduser @lucasgirls\n"
+            "  • By name      → /finduser John\n"
+            "  • By Telegram ID → /finduser 123456789\n"
+            "  • By User ID   → /finduser 123456789"
+        )
         return
 
-    # Strip leading @ if provided
-    query = args[0].lstrip("@").lower()
+    # Support multi-word names (e.g. /finduser John Doe)
+    query_raw = " ".join(args).strip()
 
     async with users_lock:
         data = load_users()
 
     users = data.get("users", {})
     matches = []
-    for tg_key, record in users.items():
-        if not isinstance(record, dict):
-            continue
-        uname = (record.get("username") or "").lower()
-        if uname == query:
-            matches.append((tg_key, record))
+    search_type = ""
+
+    if query_raw.startswith("@"):
+        # ── Search by username ────────────────────────────────────────────────
+        uname_query = query_raw.lstrip("@").lower()
+        search_type = f"username @{uname_query}"
+        for tg_key, record in users.items():
+            if not isinstance(record, dict):
+                continue
+            if (record.get("username") or "").lower() == uname_query:
+                matches.append((tg_key, record))
+
+    elif query_raw.lstrip("-").isdigit():
+        # ── Search by Telegram ID or User ID (numeric) ────────────────────────
+        search_type = f"ID {query_raw}"
+        for tg_key, record in users.items():
+            if not isinstance(record, dict):
+                continue
+            # Match dict key (Telegram ID) or user_id field
+            if str(tg_key) == query_raw or str(record.get("user_id", "")) == query_raw:
+                matches.append((tg_key, record))
+
+    else:
+        # ── Search by name (partial) or exact username ────────────────────────
+        query_lower = query_raw.lower()
+        search_type = f"name/username \"{query_raw}\""
+        for tg_key, record in users.items():
+            if not isinstance(record, dict):
+                continue
+            fname = (record.get("first_name") or "").lower()
+            uname = (record.get("username") or "").lower()
+            if query_lower in fname or uname == query_lower:
+                matches.append((tg_key, record))
 
     if not matches:
         await safe_send_message(context.bot, update.effective_chat.id,
-                                f"No user found with username @{query}.")
+                                f"❌ No user found for {search_type}.")
         return
+
+    # Header showing how many results were found
+    await safe_send_message(context.bot, update.effective_chat.id,
+                            f"🔍 Found {len(matches)} result(s) for {search_type}:")
 
     for tg_key, record in matches:
         reset_tokens_if_new_day(record)
