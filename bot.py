@@ -1471,6 +1471,11 @@ def main() -> None:
         if api_id and api_hash and phone and bot2_uname:
             global telethon_client
             session_str = os.getenv("TELETHON_SESSION", "")
+            # Railway strips trailing = from env vars — re-add base64 padding
+            if session_str and len(session_str) > 1:
+                _b64 = session_str[1:]
+                _b64 += "=" * ((-len(_b64)) % 4)
+                session_str = session_str[0] + _b64
             session = StringSession(session_str) if session_str else StringSession()
             client = TelegramClient(session, int(api_id), api_hash)
             await client.start(phone=phone)
@@ -1491,6 +1496,11 @@ def main() -> None:
         if api_id_2 and api_hash_2 and phone_2 and bot2_uname:
             global telethon_client_2
             session_str_2 = os.getenv("TELETHON_SESSION_2", "")
+            # Railway strips trailing = from env vars — re-add base64 padding
+            if session_str_2 and len(session_str_2) > 1:
+                _b64_2 = session_str_2[1:]
+                _b64_2 += "=" * ((-len(_b64_2)) % 4)
+                session_str_2 = session_str_2[0] + _b64_2
             session_2 = StringSession(session_str_2) if session_str_2 else StringSession()
             client_2 = TelegramClient(session_2, int(api_id_2), api_hash_2)
             await client_2.start(phone=phone_2)
