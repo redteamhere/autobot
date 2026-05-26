@@ -1470,22 +1470,26 @@ def main() -> None:
         bot2_uname = os.getenv("BOT2_USERNAME", "")
         if api_id and api_hash and phone and bot2_uname:
             global telethon_client
-            session_str = os.getenv("TELETHON_SESSION", "")
-            # Railway strips trailing = from env vars — re-add base64 padding
-            if session_str and len(session_str) > 1:
-                _b64 = session_str[1:]
-                _b64 += "=" * ((-len(_b64)) % 4)
-                session_str = session_str[0] + _b64
-            session = StringSession(session_str) if session_str else StringSession()
-            client = TelegramClient(session, int(api_id), api_hash)
-            await client.start(phone=phone)
-            new_session_str = client.session.save()
-            if new_session_str != session_str:
-                _save_session_to_env(new_session_str, key="TELETHON_SESSION")
-                os.environ["TELETHON_SESSION"] = new_session_str
-                logger.info("Telethon session (account 1) saved to .env")
-            telethon_client = client
-            logger.info("Telethon client started (account 1) — bot2: %s", bot2_uname)
+            try:
+                session_str = os.getenv("TELETHON_SESSION", "")
+                # Re-add base64 padding stripped by some env systems (e.g. Railway)
+                if session_str and len(session_str) > 1:
+                    _b64 = session_str[1:]
+                    _b64 += "=" * ((-len(_b64)) % 4)
+                    session_str = session_str[0] + _b64
+                session = StringSession(session_str) if session_str else StringSession()
+                client = TelegramClient(session, int(api_id), api_hash)
+                await client.start(phone=phone)
+                new_session_str = client.session.save()
+                if new_session_str != session_str:
+                    _save_session_to_env(new_session_str, key="TELETHON_SESSION")
+                    os.environ["TELETHON_SESSION"] = new_session_str
+                    logger.info("Telethon session (account 1) saved to .env")
+                telethon_client = client
+                logger.info("Telethon client started (account 1) — bot2: %s", bot2_uname)
+            except Exception as e:
+                logger.error("Failed to start Telethon account 1 (%s) — bot2 disabled. "
+                             "Regenerate TELETHON_SESSION and redeploy.", e)
         else:
             logger.info("Bot2 env vars not set — bot2 integration disabled")
 
@@ -1495,22 +1499,26 @@ def main() -> None:
         phone_2    = os.getenv("PHONE_NUMBER_2", "")
         if api_id_2 and api_hash_2 and phone_2 and bot2_uname:
             global telethon_client_2
-            session_str_2 = os.getenv("TELETHON_SESSION_2", "")
-            # Railway strips trailing = from env vars — re-add base64 padding
-            if session_str_2 and len(session_str_2) > 1:
-                _b64_2 = session_str_2[1:]
-                _b64_2 += "=" * ((-len(_b64_2)) % 4)
-                session_str_2 = session_str_2[0] + _b64_2
-            session_2 = StringSession(session_str_2) if session_str_2 else StringSession()
-            client_2 = TelegramClient(session_2, int(api_id_2), api_hash_2)
-            await client_2.start(phone=phone_2)
-            new_session_str_2 = client_2.session.save()
-            if new_session_str_2 != session_str_2:
-                _save_session_to_env(new_session_str_2, key="TELETHON_SESSION_2")
-                os.environ["TELETHON_SESSION_2"] = new_session_str_2
-                logger.info("Telethon session (account 2) saved to .env")
-            telethon_client_2 = client_2
-            logger.info("Telethon client started (account 2) — fallback ready")
+            try:
+                session_str_2 = os.getenv("TELETHON_SESSION_2", "")
+                # Re-add base64 padding stripped by some env systems (e.g. Railway)
+                if session_str_2 and len(session_str_2) > 1:
+                    _b64_2 = session_str_2[1:]
+                    _b64_2 += "=" * ((-len(_b64_2)) % 4)
+                    session_str_2 = session_str_2[0] + _b64_2
+                session_2 = StringSession(session_str_2) if session_str_2 else StringSession()
+                client_2 = TelegramClient(session_2, int(api_id_2), api_hash_2)
+                await client_2.start(phone=phone_2)
+                new_session_str_2 = client_2.session.save()
+                if new_session_str_2 != session_str_2:
+                    _save_session_to_env(new_session_str_2, key="TELETHON_SESSION_2")
+                    os.environ["TELETHON_SESSION_2"] = new_session_str_2
+                    logger.info("Telethon session (account 2) saved to .env")
+                telethon_client_2 = client_2
+                logger.info("Telethon client started (account 2) — fallback ready")
+            except Exception as e:
+                logger.error("Failed to start Telethon account 2 (%s) — fallback disabled. "
+                             "Regenerate TELETHON_SESSION_2 and redeploy.", e)
         else:
             logger.info("Bot2 account 2 vars not set — fallback account disabled")
 
