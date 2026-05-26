@@ -392,6 +392,79 @@ pm2 restart telegram-bot
 
 ---
 
+## Deployment — Railway
+
+Railway is a simple cloud platform that runs the bot 24/7. It supports persistent volumes so your user data survives redeploys.
+
+### Step 1 — Push to GitHub
+
+Make sure your code is pushed to GitHub (already done if you followed earlier steps).
+
+### Step 2 — Create a Railway project
+
+1. Go to [railway.app](https://railway.app) and sign in with GitHub
+2. Click **New Project → Deploy from GitHub repo**
+3. Select your `autobot` repository
+4. Railway will auto-detect Python and start building
+
+### Step 3 — Set environment variables
+
+Go to your project → **Variables** tab → add each of these:
+
+| Variable | Value |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` | Your bot token |
+| `ADMIN_TELEGRAM_ID` | Your Telegram user ID |
+| `API_ID` | Telegram API ID (account 1) |
+| `API_HASH` | Telegram API hash (account 1) |
+| `PHONE_NUMBER` | Phone number (account 1) |
+| `BOT2_USERNAME` | `@android_protect_bot` |
+| `TELETHON_SESSION` | Your session string |
+| `API_ID_2` | *(optional)* Account 2 API ID |
+| `API_HASH_2` | *(optional)* Account 2 API hash |
+| `PHONE_NUMBER_2` | *(optional)* Account 2 phone |
+| `TELETHON_SESSION_2` | *(optional)* Account 2 session |
+| `CHANNEL_ID` | *(optional)* `@yourchannel` |
+
+> **TELETHON_SESSION** — copy the full session string from your local `.env` file. This skips OTP on Railway.
+
+### Step 4 — Add a Volume (persistent data)
+
+Without a volume, your `users.json`, `deliveries.json`, and `submission_counter.json` are **wiped on every redeploy**.
+
+1. In your Railway project click **New → Volume**
+2. Set **Mount Path** to `/app`
+3. Click **Create**
+
+Railway will now persist all data files between deploys and restarts.
+
+### Step 5 — Deploy
+
+Railway deploys automatically when you push to GitHub. To trigger a manual deploy:
+- Go to your project → **Deployments** → click **Deploy**
+
+### Step 6 — Check logs
+
+Click your service → **Logs** tab. You should see:
+```
+Telethon client started (account 1) — bot2: @android_protect_bot
+Admin commands set for ...
+Application started
+```
+
+**Bot is live. ✅**
+
+### Updating after code changes
+
+Just push to GitHub — Railway auto-redeploys:
+```cmd
+git add .
+git commit -m "update"
+git push
+```
+
+---
+
 ## Deployment — Render.com (free cloud hosting)
 
 1. Push the project to a GitHub repository
