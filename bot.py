@@ -1461,7 +1461,7 @@ def main() -> None:
             BotCommand("start", "Start the bot"),
             BotCommand("info", "Check your user ID and account details"),
         ])
-        await app.bot.set_my_description("Testing files\n\n")
+        await app.bot.set_my_description("Testing files\n\nContact Admin: @bt_mob_sale")
 
         # ── Start Telethon client for bot2 integration ─────────────────────
         api_id     = os.getenv("API_ID", "")
