@@ -446,7 +446,8 @@ def build_waiting_text(filename: str, submission_id: int, elapsed_seconds: float
         f"Submission ID: {submission_id}\n\n"
         "Your APK has been received and is being processed by our team.\n"
         "You will receive the protected version shortly. Please wait.\n\n"
-        f"⏱ Last updated: {minutes:.2f} minutes since submission"
+        f"⏱ Last updated: {minutes:.2f} minutes since submission\n\n"
+        "Contact Admin: @bt_mob_sale"
     )
 
 
