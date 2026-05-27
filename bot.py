@@ -1142,6 +1142,60 @@ async def cmd_finduser(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await safe_send_message(context.bot, update.effective_chat.id, text)
 
 
+async def cmd_trial1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin-only: grant a 2-day trial with 1 token/day.
+    Sets the user as paid, daily_token_limit=1, expiry = today + 2 days.
+    Usage: /Trial_1 <user_id>
+    """
+    if not await admin_only(update):
+        return
+    args = context.args
+    if not args:
+        await safe_send_message(
+            context.bot, update.effective_chat.id,
+            "Usage: /Trial_1 <user_id>\n"
+            "Example: /Trial_1 123456789\n\n"
+            "Grants a 2-day trial with 1 token/day and marks user as paid."
+        )
+        return
+    try:
+        target_id = int(args[0])
+    except ValueError:
+        await safe_send_message(context.bot, update.effective_chat.id, "Invalid user ID.")
+        return
+
+    expiry = date.today() + __import__("datetime").timedelta(days=2)
+    expiry_str = expiry.isoformat()  # YYYY-MM-DD
+
+    async with users_lock:
+        data = load_users()
+        result = find_record_by_bot_id(data, target_id)
+        if not result:
+            await safe_send_message(context.bot, update.effective_chat.id,
+                                    f"User {target_id} not found.")
+            return
+        tg_key, record = result
+        record["paid"] = True
+        record["daily_token_limit"] = 1
+        record["expiry_date"] = expiry_str
+        save_users(data)
+
+    fname = record.get("first_name") or "N/A"
+    uname = f"@{record['username']}" if record.get("username") else "No username"
+    await safe_send_message(
+        context.bot, update.effective_chat.id,
+        f"✅ Trial activated!\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"User ID: {target_id}\n"
+        f"Name: {fname}\n"
+        f"Username: {uname}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"Paid: ✅ Yes\n"
+        f"Daily Token Limit: 1 token/day\n"
+        f"Expiry Date: {expiry_str} (2 days from today)"
+    )
+
+
 async def cmd_listusers(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await admin_only(update):
         return
@@ -1551,6 +1605,7 @@ def main() -> None:
     application.add_handler(CommandHandler("listusers", cmd_listusers))
     application.add_handler(CommandHandler("broadcast", cmd_broadcast))
     application.add_handler(CommandHandler("finduser", cmd_finduser))
+    application.add_handler(CommandHandler("Trial_1", cmd_trial1))
     # Admin text reply → forwards message to the corresponding user
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_text))
     # Single document handler — routes internally to delivery or APK submission
@@ -1634,6 +1689,7 @@ def main() -> None:
             BotCommand("setexpiry", "Set subscription expiry — /setexpiry <id> YYYY-MM-DD"),
             BotCommand("broadcast", "Broadcast a message to all users — /broadcast <text>"),
             BotCommand("finduser",  "Find user by username — /finduser @username"),
+            BotCommand("trial_1",   "Give 2-day trial (1 token/day) — /Trial_1 <user_id>"),
         ]
         admin_ids_raw = os.getenv("ADMIN_TELEGRAM_ID", "")
         for admin_id_str in admin_ids_raw.split(","):
