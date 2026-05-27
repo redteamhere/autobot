@@ -712,7 +712,8 @@ async def _process_via_bot2(
                     f"📂 {filename}\n\n"
                     f"Submission ID: {submission_id}\n\n"
                     f"⏳ Queued — position #{my_position - 1} in line.\n"
-                    "Your APK will be processed shortly. Please wait."
+                    "Your APK will be processed shortly. Please wait.\n\n"
+                    "Contact Admin: @bt_mob_sale"
                 ),
             )
         except Exception:
@@ -731,7 +732,8 @@ async def _process_via_bot2(
                         f"📂 {filename}\n\n"
                         f"Submission ID: {submission_id}\n\n"
                         "🔄 Processing your APK now...\n"
-                        "Please wait, this usually takes a few minutes."
+                        "Please wait, this usually takes a few minutes.\n\n"
+                        "Contact Admin: @bt_mob_sale"
                     ),
                 )
             except Exception:
