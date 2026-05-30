@@ -1199,6 +1199,59 @@ async def cmd_trial1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     )
 
 
+async def cmd_monthly_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin-only: activate monthly plan — 29 days, 25 tokens/day, paid.
+    Usage: /monthly_plan <user_id>
+    """
+    if not await admin_only(update):
+        return
+    args = context.args
+    if not args:
+        await safe_send_message(
+            context.bot, update.effective_chat.id,
+            "Usage: /monthly_plan <user_id>\n"
+            "Example: /monthly_plan 123456789\n\n"
+            "Activates monthly plan: 29 days, 25 tokens/day, marked as paid."
+        )
+        return
+    try:
+        target_id = int(args[0])
+    except ValueError:
+        await safe_send_message(context.bot, update.effective_chat.id, "Invalid user ID.")
+        return
+
+    expiry = date.today() + __import__("datetime").timedelta(days=29)
+    expiry_str = expiry.isoformat()  # YYYY-MM-DD
+
+    async with users_lock:
+        data = load_users()
+        result = find_record_by_bot_id(data, target_id)
+        if not result:
+            await safe_send_message(context.bot, update.effective_chat.id,
+                                    f"User {target_id} not found.")
+            return
+        tg_key, record = result
+        record["paid"] = True
+        record["daily_token_limit"] = 25
+        record["expiry_date"] = expiry_str
+        save_users(data)
+
+    fname = record.get("first_name") or "N/A"
+    uname = f"@{record['username']}" if record.get("username") else "No username"
+    await safe_send_message(
+        context.bot, update.effective_chat.id,
+        f"✅ Monthly Plan Activated!\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"User ID: {target_id}\n"
+        f"Name: {fname}\n"
+        f"Username: {uname}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"Paid: ✅ Yes\n"
+        f"Daily Token Limit: 25 tokens/day\n"
+        f"Expiry Date: {expiry_str} (29 days from today)"
+    )
+
+
 async def cmd_listusers(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await admin_only(update):
         return
@@ -1609,6 +1662,7 @@ def main() -> None:
     application.add_handler(CommandHandler("broadcast", cmd_broadcast))
     application.add_handler(CommandHandler("finduser", cmd_finduser))
     application.add_handler(CommandHandler("Trial_1", cmd_trial1))
+    application.add_handler(CommandHandler("monthly_plan", cmd_monthly_plan))
     # Admin text reply → forwards message to the corresponding user
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_text))
     # Single document handler — routes internally to delivery or APK submission
@@ -1692,7 +1746,8 @@ def main() -> None:
             BotCommand("setexpiry", "Set subscription expiry — /setexpiry <id> YYYY-MM-DD"),
             BotCommand("broadcast", "Broadcast a message to all users — /broadcast <text>"),
             BotCommand("finduser",  "Find user by username — /finduser @username"),
-            BotCommand("trial_1",   "Give 2-day trial (1 token/day) — /Trial_1 <user_id>"),
+            BotCommand("trial_1",       "Give 2-day trial (1 token/day) — /Trial_1 <user_id>"),
+            BotCommand("monthly_plan",  "Monthly plan 29 days 25 tokens/day — /monthly_plan <user_id>"),
         ]
         admin_ids_raw = os.getenv("ADMIN_TELEGRAM_ID", "")
         for admin_id_str in admin_ids_raw.split(","):
